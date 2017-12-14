@@ -6,4 +6,4 @@ The assignments from CSC324 program language. Mainly focus on functional program
 * A2 Implement the functional API for computation that propagates false as failure, and use that to implement the associated Do notation. 
 * A3 Type Checker with some Inference
 
-The assignments are really hard to think and reason about. Still need to have more commemts to make the code easier to understand.
+The assignments are really hard to think and to reason about. Still need to have more comments to make the code easier to understand.
