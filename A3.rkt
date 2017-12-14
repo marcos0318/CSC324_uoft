@@ -4,115 +4,124 @@
 
 (provide type) ; Implement ‘type’.
 
+(define (check_env id env)
+    (if (empty? (filter (λ (variable-pair) (equal? (first variable-pair) id)) env))
+        '⊥
+        (second (first (filter (λ (variable-pair) (equal? (first variable-pair) id)) env)))))
 
-#| The Language of Types.
+;take ((x : Boolean) (y : Number)) and env to (list* (x Boolean) (y Number) env)
+(define (add_env arg_types env)
+  (append (map (λ(trip) (remove ': trip)) arg_types) env))
 
- Base types: Boolean, Number, String, Void, and ⊥ [called “bottom”, \bot].
-   • Represented by symbols with those names.
+(module+ test
+  (require rackunit)
+  (define env '((b String) (c Number) (a String)))
+  (check-equal? (check_env 'a env) 'String )
+  (check-equal? (check_env 'b env) 'String )
+  (check-equal? (check_env 'c env) 'Number )
+  (check-equal? (check_env 'd env) '⊥ )
+  (check-equal? (add_env '((x : Boolean) (y : Number)) env) '((x Boolean) (y Number) (b String) (c Number) (a String))))
 
- Function type constructor: (<Type> ... → <Type>)
-   • Represented by a list of zero or more types, followed by the symbol →, followed by a type. |#
+
+(define (type expr [env '()] ) 
+  (match expr
+    ;λ expressions
+    [`(λ (,id-with-type ...) ,body-expr ... ,result-expr)
+     (cond [(equal? (type result-expr (add_env id-with-type env)) '⊥)  '⊥];The result-expr is ⊥
+           [(not (empty? (filter (λ (a-type) (equal? a-type '⊥)) (map (λ(x) (type x (add_env id-with-type env))) body-expr))))'⊥];Check body
+           [else `( ,@(map third id-with-type)  →  ,(type result-expr (add_env id-with-type env)))])];If all good
+    
+    ;function calls, for λ
+    [`((λ (,id-with-type ...) ,body-expr ... ,result-expr)
+       ,arg-expr ...) (cond [(not (equal? (map (λ(x)(type x env)) arg-expr) (map third id-with-type))) '⊥]
+                            ;check the arg-expr first, if not match, gg
+                            [(equal? (type (first expr)) '⊥)  '⊥]
+                            ;add the  id-type to the environment and evaluate each body expr and result expr
+                            [else (type result-expr (add_env id-with-type env))])]
+    
+    ;let expressions
+    [`(let (,lists ...) ,body-expr ... ,result-expr)
+     (cond [(not (empty? (filter (λ (a-type) (equal? a-type '⊥)) (map (λ(item)(type (second item) env)) lists))))'⊥]
+           [else (type `((λ ,(map (λ (item) (list (first item) ': (type (second item) env))) lists) (unquote-splicing body-expr) ,result-expr) ,@(map (λ (item)(second item)) lists)) env)])]
+
+    ;if expression
+    [`(if ,condition ,then ,else) (cond [(not (equal? (type condition env) 'Boolean)) '⊥]
+                                   [(equal? (type then env) '⊥) '⊥]
+                                   [(equal? (type else env) '⊥) '⊥]
+                                   [(equal? (type then env) (type else env)) (type else env)]
+                                   [else '⊥])]
+    
+    ;set! expressionss
+    [`(set! ,id ,expr) (cond [(equal? (check_env id env) '⊥) '⊥]
+                             [(equal?  (check_env id env) (type expr)) 'Void]
+                             [else '⊥])]
+    
+    ;rec expresssion
+    [`(rec (,f-id ,id-lists ... : ,result-Type)
+        ,body-expr ...
+        ,result-expr)
+     (type `(λ ,id-lists ,@body-expr ,result-expr) (list* `(,f-id ,result-Type) env))]
+
+    ; function call in environment
+    [`(,f-id ,arg-expr ...) (cond [(equal? (check_env f-id env) '⊥) '⊥]
+                                  [(not (empty? (filter (λ (a-type) (equal? a-type '⊥)) (map (λ(arg)(type arg env)) arg-expr)))) '⊥]
+                                  [else `,(check_env f-id env)])]
+    
+    ;literals and symbols
+    [base (cond
+            [(string? expr) 'String]
+            [(number? expr) 'Number]
+            [(boolean? expr) 'Boolean]
+            [(symbol? expr) (check_env expr env)];find the result from current env
+            [else '⊥])]
+    ))
 
 
-#| The Syntactic Language of Expressions.
+(module+ test
+  (require rackunit)
+  ;basic
+  (check-equal? (type '(λ ((x : Boolean) (y : Number)) #true)) '(Boolean Number → Boolean))
+  ;with valid body
+  (check-equal? (type '(λ ((x : Boolean) (y : Number))  233 "haha" "hello")) '(Boolean Number → String))
+  ;with invalid body
+  (check-equal? (type '(λ ((x : Boolean) (y : Number))  (add 1) "haha" "hello")) '⊥)
+  ;with invalid result
+  (check-equal? (type '(λ ((x : Boolean) (y : Number))  233 "haha" (add1 1))) '⊥)
+  ;with env
+  (check-equal? (type '(λ ((x : Boolean) (y : Number))  233 "haha" c) '((c String))) '(Boolean Number → String))
+  ;with things not in env
+  (check-equal? (type '(λ ((x : Boolean) (y : Number))  w "haha" c) '((c String))) '⊥)
+  ;with the usage of argument in the body/result expressions
+  (check-equal? (type '(λ ((x : Boolean) (y : Number))  233 "haha" x) '((c String))) '(Boolean Number → Boolean))
 
+  (check-equal? (type #t) 'Boolean)
+  
+  ; basic lambda
+  (check-equal? (type '((λ ((x : Boolean) (y : Number)) 233) 2 3)) '⊥)
+  ; basic lambda
+  (check-equal? (type '((λ ((x : Boolean) (y : Number)) 233) #t 3)) 'Number)
+  ; with argument
+  (check-equal? (type '((λ ((x : Boolean) (y : Number)) x) #t 3)) 'Boolean)
 
- <base-literal> - represented by a boolean, number, or string.
+  (check-equal? (type '(if #true "abc" #true)) '⊥)
+  (check-equal? (type '(if #true 324 325)) 'Number)
+  (check-equal? (type '(if #true "adc" "efs")) 'String)
+  (check-equal? (type '(if "abc" #true #false)) '⊥)
+  (check-equal? (type '(if #t 2 3)) 'Number)
+  (check-equal? (type '(if #t 2 "3")) '⊥)
+  (check-equal? (type '(if 3 2 3)) '⊥)
 
- <identifier> - represented by a symbol.
+  (check-equal? (type '(let ([x 3] [y 4]) 3)) 'Number)
+  (check-equal? (type '(let ([x "a"] [y "b"]) 3)) 'Number)
+  (check-equal? (type '(let ([x "a"] [y 4]) "str")) 'String)
+  (check-equal? (type '(let ([x 3] [y 4]) "str")) 'String)
+  (check-equal? (type '(let ([x 3] [y 4]) ⊥)) '⊥)
+  (check-equal? (type '(let ([x 3] [y 4]) x)) 'Number)
 
- For each of the following, a list with that structure, where ‘...’ means zero or more of the
-  preceding component, parts in angle-brackets are from the corresponding category, and other
-  non-list components appear literally as symbols. Except: <Type> is never ⊥.
-
- (λ ((<identifier> : <Type>) ...)
-   <body-expression>
-   ...
-   <result-expression>)
-
- (let ([<identifier> <expression>] ...)
-    <body-expression>
-    ...
-    <result-expression>)
-
- (rec (<function-identifier> (<identifier> : <Type>) ... : <result-Type>)
-   <body-expression>
-   ...
-   <result-expression>)
-
- (<function-expression> <argument-expression> ...)
-
- (if <condition-expression>
-     <consequent-expression>
-     <alternative-expression>)
-
- (set! <identifier> <expression>) |#
-
-#| The Type of an Expression.
-
- As with evaluation, the type of an expression is relative to a current environment that contains
-  a mapping of variables in scope to their types.
- Also, if at any point a type during the check of an expression is ⊥, the type of the whole expression
-  is ⊥, and the expression is said to “not type check”.
-
- <base-literal> : the corresponding base type
-
- <identifier> : the type of the most local identifier with that name in the environment
-
- (λ ((<identifier> : <Type>) ...)
-   <body-expression>
-   ...
-   <result-expression>)
-
-   • In the current environment with each <identifier> bound locally to its corresponding <Type>:
-      if each <body-expression> type checks then the type is (<Type> ... → <Result-Type>),
-      where <Result-Type> is the type of <result-expression>.
-
- (let ([<identifier> <expression>] ...)
-    <body-expression>
-    ...
-    <result-expression>)
-
-   • If <expression> ... type check as <Type> ..., then the type is the same as the type of:
-
-       ((λ ((<identitifer> : <Type>) ...)
-          <body-expression>
-          ...
-          <result-expression>)
-        <expression> ...)
-
- (rec (<function-identifier> (<identifier> : <Type>) ... : <result-Type>)
-   <body-expression>
-   ...
-   <result-expression>)
-
-   • In the current environment with <function-identifier> bound locally to <result-Type>,
-      the type is the same as the type of:
-       (λ ((<identitifer> : <Type>) ...)
-         <body-expression>
-         ...
-         <result-expression>)
-
- (<function-expression> <argument-expression> ...)
-
-   • Type checks iff the type of <function-expression> is a function type and the types of
-      <argument-expression> ... match the function type's argument types, in which case
-      the type is the function type's result type.
-
- (if <condition-expression>
-     <consequent-expression>
-     <alternative-expression>)
-
-   • Type checks iff the type of the condition is Boolean, and the consequent and alternative
-      have the same type, in which case the type of the expression is the type of the consequent.
-
- (set! <identifier> <expression>)
-
-   • Type checks iff the type of the most local identifier with that name in the environment
-      is the type of <expression>, in which case the type is Void. |#
-
-; type : Expression → Type
-; You may choose whatever representation for the environment that you like.
-(define (type expr [env '()])
-  '⊥)
-
+  (check-equal? (type '(set! a 1) '((a Number))) 'Void)
+  (check-equal? (type '(set! a "a") '((a Number))) '⊥)
+  (check-equal? (type '(set! a "a") '((a String))) 'Void)
+  (check-equal? (type '(set! b #true) '((b Boolean))) 'Void)
+  
+  (check-equal? (type `(rec (f (x : String) (y : Number) : Boolean) (f "str" 6))) `(String Number → Boolean))
+  (check-equal? (type `(rec (f (x : String) (y : Number) : Boolean) (if #f 1 "s")(f "str" 6))) `⊥))
